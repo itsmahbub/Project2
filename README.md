@@ -14,6 +14,7 @@ We are prioritizing a native-code target where a memory-safety bug is realistic,
 - [CodeQL on Linux](docs/CODEQL_LINUX.md)
 - [Step-by-Step Linux Guide for zchunk + CodeQL](docs/CODEQL_ZCHUNK_LINUX_STEP_BY_STEP.md)
 - [zchunk CodeQL Workflow](docs/ZCHUNK_CODEQL.md)
+- [Step-by-Step Ubuntu Guide for AFL++ on zchunk](docs/AFL_ZCHUNK_UBUNTU.md)
 
 ### Workspace Layout
 
