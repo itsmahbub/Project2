@@ -316,6 +316,23 @@ Or, if you are launching AFL++ manually:
 AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 ./scripts/run-zchunk-afl.sh
 ```
 
+### Problem: AFL++ says there are no free CPU cores
+
+This is common on a small EC2 instance if another AFL++ job is already running.
+
+Recommended beginner fix:
+
+- do not start a second fuzzing job on the same 2-core machine
+- let the current run finish first
+
+If you intentionally want to run despite the warning, AFL++ supports:
+
+```bash
+AFL_NO_AFFINITY=1 ./scripts/run-zchunk-afl.sh
+```
+
+But on a small cloud VM, that is usually not the best default.
+
 ### Problem: The build succeeds, but fuzzing is slow
 
 The shipped seed corpus includes some large files close to `1 MB`, so a novice should expect a slower start.
