@@ -1,56 +1,113 @@
 # Step-by-Step: Run AFL++ On zchunk In Ubuntu
 
-## Who This Is For
-
-This guide is for a beginner who wants to:
-
-- install AFL++ on Ubuntu
-- build `zchunk` with AFL++ instrumentation
-- seed the fuzzer with real `.zck` samples
-- run a short pilot campaign first
-- inspect the saved AFL++ stats afterward
-
 ## Goal
 
-Set up a first AFL++ workflow for the `zchunk` target on Ubuntu, using the existing project layout.
+Set up one clear AFL++ workflow for `zchunk` and explain how to fuzz more than one part of the program without rebuilding everything over and over.
 
-This guide is aimed at the first practical fuzzing pass, not a perfect final harness.
+This guide is for the first practical fuzzing pass, not a final custom harness.
 
 The workflow below was tested on Ubuntu `24.04` on an AWS EC2 machine.
 
-## Why Start With `unzck`
+## The Core Model
 
-For this project, the best first AFL++ target is:
+The most important point is:
 
-- `targets/zchunk/src/unzck.c`
+- build `zchunk` once with AFL++ instrumentation
+- let that one build produce several instrumented executables
+- run AFL++ separately against whichever executable and argument set you want to study
 
-Why this is a good starting point:
+So:
 
-- it consumes attacker-controlled `.zck` files directly
-- it exercises the real parser and decompression path end to end
-- the CodeQL triage already pointed us toward `src/unzck.c`
-- the repository ships sample `.zck` files under `test/files/` that can seed the corpus
+- you do not need a completely different source tree for each target
+- you do not need a separate Meson configuration for `unzck` versus `zck_read_header`
+- you usually do want separate AFL output directories for separate target commands
 
-The initial command we want AFL++ to drive is:
+This is also why the project documentation mentions several zchunk targets. They are separate AFL target commands, not separate source-code projects.
+
+## Why There Are Multiple zchunk Targets
+
+The upstream `zchunk` build produces multiple command-line utilities from the same source tree. In this project, the AFL++ build instruments that whole build.
+
+Examples include:
+
+- `unzck`
+- `zck_read_header`
+- `zck`
+- `zck_gen_zdict`
+- `zck_delta_size`
+- `zckdl`
+
+For fuzzing, we care most about the utilities that consume attacker-controlled `.zck` files directly.
+
+## Why Start With `unzck -c @@`
+
+The best first AFL++ target for this project is:
 
 ```bash
 targets/zchunk/build-afl/src/unzck -c @@
 ```
 
+Why this is the best baseline:
+
+- it consumes attacker-controlled `.zck` files directly
+- it exercises real parser and decompression logic end to end
+- the CodeQL triage already pointed us toward `src/unzck.c`
+- the upstream repository ships sample `.zck` files under `test/files/` that can seed the corpus
+
 The `-c` flag sends decompressed output to stdout, which avoids creating lots of output files during fuzzing.
 
-## What This Repo Now Includes
+## When To Use Alternate Targets
 
-This project now has helper scripts for the AFL++ phase:
+After `unzck`, the next most useful narrow targets are:
+
+1. `zck_read_header -c @@`
+2. `zck_read_header -f @@`
+3. `zck_read_header @@`
+
+Why these are worth running separately:
+
+- all three enter real `.zck` parsing code
+- they are narrower than `unzck`
+- they avoid the extra decompression work in the baseline target
+- `-c` and `-f` reach slightly different validation and metadata paths
+
+What each one emphasizes:
+
+- `zck_read_header @@`: parses the archive header and prints metadata
+- `zck_read_header -c @@`: parses the header and walks chunk information
+- `zck_read_header -f @@`: parses the header and validates checksums
+
+## One Build, Many Executables, Many AFL Runs
+
+You can fuzz different parts of the program using different command lines, but do it as separate AFL campaigns.
+
+That means:
+
+- yes, one AFL-instrumented build is enough
+- yes, you can run AFL with different command lines for different functionality
+- no, you should not try to combine many modes into one single AFL campaign and treat that as the same target
+
+Keeping one fixed target command per AFL run makes the results easier to interpret:
+
+- performance numbers stay comparable
+- coverage growth is easier to compare
+- crashes are easier to reproduce
+- output directories stay cleanly separated
+
+## AFL++ Helper Scripts In This Repo
+
+This project includes:
 
 - `scripts/build-zchunk-afl.sh`
 - `scripts/prepare-zchunk-afl-corpus.sh`
 - `scripts/run-zchunk-afl.sh`
 - `scripts/run-zchunk-afl-pilot.sh`
+- `scripts/run-zchunk-afl-target.sh`
+- `scripts/run-zchunk-afl-target-pilot.sh`
 - `scripts/repro-zchunk-afl-crash.sh`
 - `scripts/summarize-zchunk-afl-output.sh`
 
-These mirror the existing CodeQL workflow style: keep the commands short, keep artifacts inside the project, and make reruns repeatable.
+The first two prepare the build and corpus. The `run-zchunk-afl*.sh` wrappers are for the baseline `unzck -c` target. The `run-zchunk-afl-target*.sh` wrappers are the generic form for alternate executables and arguments.
 
 ## Step 1: Install Ubuntu Dependencies
 
@@ -103,7 +160,15 @@ What this does:
 - removes any old `build-afl` directory
 - configures Meson with `CC=afl-clang-fast`
 - builds the target with Ninja
-- leaves the instrumented binary at `targets/zchunk/build-afl/src/unzck`
+- leaves instrumented executables under `targets/zchunk/build-afl/src/`
+
+After the build, look in:
+
+```bash
+ls "$PWD/targets/zchunk/build-afl/src"
+```
+
+You should see several instrumented utilities, not just `unzck`.
 
 ### Optional Sanitizer Mode
 
@@ -115,7 +180,7 @@ AFL_USE_ASAN=1 ./scripts/build-zchunk-afl.sh "$PWD/targets/zchunk"
 
 When using ASan, keep the AFL++ memory limit disabled:
 
-- `scripts/run-zchunk-afl.sh` already defaults to `-m none`
+- the runner scripts already default to `-m none`
 
 ## Step 5: Prepare A Starter Corpus
 
@@ -133,13 +198,13 @@ At the time this guide was written, the seed source was:
 
 - `targets/zchunk/test/files/`
 
-That directory already includes both normal-looking and malformed `.zck` samples, which is a good starter set for a pilot run.
+That directory includes both normal-looking and malformed `.zck` samples, which is a good starter set for a pilot run.
 
 At the time of the tested Ubuntu run, this step copied `14` sample files into `fuzzing/zchunk/in`.
 
-## Step 6: Smoke-Test The Instrumented Binary
+## Step 6: Smoke-Test The Baseline Target
 
-Before running AFL++, make sure the instrumented `unzck` works with a known-good sample:
+Before running AFL++, make sure the instrumented baseline command works with a known-good sample:
 
 ```bash
 ./targets/zchunk/build-afl/src/unzck -c ./fuzzing/zchunk/in/LICENSE.nodict.fodt.zck >/dev/null
@@ -160,22 +225,16 @@ The easiest beginner command is the pilot wrapper:
 ./scripts/run-zchunk-afl-pilot.sh 120
 ```
 
-What this wrapper does:
+This wrapper:
 
-- clears old `fuzzing/zchunk/out` and `fuzzing/zchunk/runtime`
+- clears old `fuzzing/zchunk/out` and runtime state
 - enables `AFL_NO_UI=1` for log-friendly output
 - enables `AFL_SKIP_CPUFREQ=1`
 - enables `AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1`, which is often needed on Ubuntu cloud VMs because of the kernel `core_pattern` setting
 - runs AFL++ for the requested number of seconds
 - prints a summary from the saved `fuzzer_stats` file at the end
 
-Why this wrapper matters:
-
-- beginners often hit the `core_pattern` abort on cloud Ubuntu machines
-- the wrapper handles that common setup issue automatically for a pilot run
-- it also gives you a clean output directory for each short validation run
-
-## Step 8: Run AFL++ Manually When You Want More Control
+## Step 8: Run The Baseline Target Manually
 
 From the project root:
 
@@ -205,15 +264,53 @@ AFL_NO_UI=1 AFL_TIMEOUT_MS=2000+ ./scripts/run-zchunk-afl.sh
 AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_NO_UI=1 ./scripts/run-zchunk-afl.sh
 ```
 
-What to watch for in the AFL++ UI:
+## Step 9: Run Alternate zchunk Targets From The Same Build
 
-- paths discovered
-- execs per second
-- hangs
-- crashes
-- whether new coverage keeps growing after the first few minutes
+Use the generic wrappers when you want to fuzz a different instrumented executable or a different fixed argument set.
 
-## Step 9: Summarize AFL++ Output
+### Short pilot for `zck_read_header -c @@`
+
+```bash
+./scripts/run-zchunk-afl-target-pilot.sh 120 \
+  "$PWD/targets/zchunk" \
+  "$PWD/fuzzing/zchunk/in" \
+  "$PWD/fuzzing/zchunk/out-read-header-chunks" \
+  build-afl \
+  zck_read_header \
+  -c
+```
+
+### Short pilot for `zck_read_header -f @@`
+
+```bash
+./scripts/run-zchunk-afl-target-pilot.sh 120 \
+  "$PWD/targets/zchunk" \
+  "$PWD/fuzzing/zchunk/in" \
+  "$PWD/fuzzing/zchunk/out-read-header-verify" \
+  build-afl \
+  zck_read_header \
+  -f
+```
+
+### Manual longer run for `zck_read_header -c @@`
+
+```bash
+AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_SKIP_CPUFREQ=1 \
+./scripts/run-zchunk-afl-target.sh \
+  "$PWD/targets/zchunk" \
+  "$PWD/fuzzing/zchunk/in" \
+  "$PWD/fuzzing/zchunk/out-read-header-chunks" \
+  build-afl \
+  zck_read_header \
+  -c
+```
+
+Practical rule:
+
+- one AFL run should use one fixed command
+- a different executable or different flags should use a different output directory
+
+## Step 10: Summarize AFL++ Output
 
 After a run finishes, print the saved summary again with:
 
@@ -232,7 +329,15 @@ This prints:
 - stability
 - queue, crash, and hang counts
 
-## Step 10: Inspect Crash Output
+What to watch for in the AFL++ UI or stats:
+
+- paths discovered
+- execs per second
+- hangs
+- crashes
+- whether new coverage keeps growing after the first few minutes
+
+## Step 11: Inspect Crash Output
 
 If AFL++ finds a crash, the interesting files will usually appear under:
 
@@ -246,9 +351,9 @@ To reproduce one quickly:
 
 If you built with ASan, rerun the reproducer with the same ASan-enabled binary so the report stays informative.
 
-## Step 11: What We Observed In The Tested Ubuntu Pilot
+## Step 12: What We Observed In The Tested Ubuntu Pilot
 
-In the tested EC2 pilot run:
+In the tested EC2 pilot run for the baseline `unzck -c @@` target:
 
 - AFL++ loaded `13` seeds from the prepared corpus
 - the corpus grew to `40` files after a `119` second run
@@ -257,7 +362,28 @@ In the tested EC2 pilot run:
 - stability was `100%`
 - no crashes or hangs were found in the short pilot
 
-This is a useful sanity baseline for a beginner:
+For alternate targets, prior EC2 smoke tests also confirmed:
+
+- `zck_read_header`, `zck_read_header -c`, and `zck_read_header -f` all ran successfully on a known-good `.zck` sample
+- `zck_read_header -c` completed a `58` second pilot at about `495` execs/sec with `13.88%` bitmap coverage and no crashes
+- `zck_read_header -f` completed a `54` second pilot at about `144` execs/sec with `15.08%` bitmap coverage and no crashes
+
+That means:
+
+- the alternate targets are viable
+- `-c` is faster
+- `-f` is slower but reaches slightly more coverage in short tests
+
+## Recommended Order For This Project
+
+On a small Ubuntu or EC2 machine:
+
+1. build once with AFL++ instrumentation
+2. fuzz `unzck -c @@` first
+3. then fuzz `zck_read_header -c @@`
+4. then fuzz `zck_read_header -f @@` if needed
+
+This gives the cleanest progression from broad parsing to narrower header-focused fuzzing while keeping the workflow simple and repeatable.
 
 - the build works
 - the fuzzer is exercising real code
