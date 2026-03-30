@@ -6,6 +6,8 @@ This note records which `zchunk` targets were explored for AFL++, what was actua
 
 The goal of this document is to keep a small experiment log instead of relying on memory.
 
+This is not only a list of candidate targets. It is also the record of our actual fuzzing attempts, including runs that did not produce a crash.
+
 ## Environment
 
 The observations below came from:
@@ -24,6 +26,15 @@ Prepared corpus size during the tested run:
 
 - `14` files copied into `fuzzing/zchunk/in`
 
+Primary AFL command used for the baseline campaign:
+
+```bash
+afl-fuzz -i /home/ubuntu/Project2/fuzzing/zchunk/in \
+  -o /home/ubuntu/Project2/fuzzing/zchunk/out \
+  -m none -t 1000+ -- \
+  /home/ubuntu/Project2/targets/zchunk/build-afl/src/unzck -c @@
+```
+
 ## Targets Considered
 
 ### `unzck -c @@`
@@ -36,9 +47,9 @@ Why it is useful:
 
 Current status:
 
-- this is the primary baseline target
+- this was the primary baseline target
 - a short pilot run worked cleanly
-- a longer run is already in progress on EC2
+- a longer EC2 run was completed without crashes
 
 ### `zck_read_header @@`
 
@@ -124,9 +135,9 @@ The following commands were verified against a known-good seed on the EC2 machin
 
 All of those exited successfully with code `0`.
 
-## Short Fuzzing Results
+## Experiments Run
 
-### `unzck -c @@`
+### Experiment 1: `unzck -c @@` pilot run
 
 Observed in the tested EC2 pilot run:
 
@@ -141,11 +152,51 @@ Observed in the tested EC2 pilot run:
 
 Interpretation:
 
-- this is a healthy baseline target
-- it is broad and stable
-- it should remain the main long-run target unless a narrower target starts producing better results
+- this was a healthy baseline target
+- it was broad and stable
+- it looked worth extending into a longer run
 
-### `zck_read_header -f @@`
+### Experiment 2: `unzck -c @@` longer run
+
+Observed from `fuzzing/zchunk/out/default/fuzzer_stats` on the Ubuntu machine:
+
+- start time: `1774838166`
+- last update: `1774875850`
+- runtime: `37,684` seconds, about `10.47` hours
+- execs done: `33,211,546`
+- execs/sec: `881.32`
+- execs/sec in last minute: `652.85`
+- corpus count: `46`
+- corpus found: `33`
+- stability: `100.00%`
+- bitmap coverage: `16.46%`
+- saved crashes: `0`
+- saved hangs: `0`
+- edges found: `357`
+- total edges: `2169`
+- AFL banner: `/home/ubuntu/Project2/targets/zchunk/build-afl/src/unzck`
+- AFL version: `++4.09c`
+
+Important command line recorded by AFL++:
+
+```bash
+afl-fuzz -i /home/ubuntu/Project2/fuzzing/zchunk/in -o /home/ubuntu/Project2/fuzzing/zchunk/out -m none -t 1000+ -- /home/ubuntu/Project2/targets/zchunk/build-afl/src/unzck -c @@
+```
+
+Interpretation:
+
+- AFL++ was running productively, not stuck
+- the campaign maintained perfect stability
+- the corpus still expanded beyond the original seeds
+- no crash or hang was found even after more than `33` million executions
+
+Conclusion from this experiment:
+
+- `unzck -c @@` was a valid first target
+- but it did not produce a quick vulnerability signal for this project
+- after this longer run, this route was deprioritized
+
+### Experiment 3: `zck_read_header -f @@` short pilot
 
 Observed in the tested EC2 pilot run:
 
@@ -170,7 +221,7 @@ Interpretation:
 - it is substantially slower than `zck_read_header -c`
 - it did not outperform `unzck` clearly enough in the short test to replace it as the main target yet
 
-### `zck_read_header -c @@`
+### Experiment 4: `zck_read_header -c @@` short pilot
 
 Observed in the later EC2 validation pilot:
 
@@ -188,6 +239,43 @@ Interpretation:
 - it is much faster than `zck_read_header -f`
 - it found slightly less coverage than `zck_read_header -f` in the short run
 - it is probably the best next narrow parser target after `unzck`
+
+Recommended next long run command:
+
+```bash
+AFL_NO_UI=1 AFL_SKIP_CPUFREQ=1 AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
+./scripts/run-zchunk-afl-target.sh \
+  "$PWD/targets/zchunk" \
+  "$PWD/fuzzing/zchunk/in" \
+  "$PWD/fuzzing/zchunk/out-read-header-chunks" \
+  build-afl \
+  zck_read_header \
+  -c
+```
+
+How to analyze that run's output:
+
+```bash
+./scripts/summarize-zchunk-afl-output.sh "$PWD/fuzzing/zchunk/out-read-header-chunks"
+```
+
+Important output locations for this run:
+
+- stats: `fuzzing/zchunk/out-read-header-chunks/default/fuzzer_stats`
+- queue: `fuzzing/zchunk/out-read-header-chunks/default/queue/`
+- crashes: `fuzzing/zchunk/out-read-header-chunks/default/crashes/`
+- hangs: `fuzzing/zchunk/out-read-header-chunks/default/hangs/`
+
+Crash reproduction for this target:
+
+```bash
+./scripts/repro-zchunk-afl-crash.sh \
+  "$PWD/fuzzing/zchunk/out-read-header-chunks/default/crashes/<crash-file>" \
+  "$PWD/targets/zchunk" \
+  build-afl \
+  zck_read_header \
+  -c
+```
 
 ## Main Obstacles Observed
 
@@ -229,22 +317,38 @@ Interpretation:
 - do not run multiple AFL jobs casually on a small EC2 instance
 - one long fuzzing job at a time is the safer default on this machine
 
+## Outcome Of The zchunk AFL Attempt
+
+What this experiment series established:
+
+- the AFL++ setup worked correctly
+- the target binary was stable under fuzzing
+- the seed corpus was usable and grew under mutation
+- alternate parser-oriented targets were also viable
+- no crash or hang was found in the baseline long run
+
+This means the effort was still useful:
+
+- it validated the fuzzing workflow
+- it gave us real measurements instead of guesses
+- it let us make an informed decision to stop investing more time in this specific route
+
 ## Recommendation Right Now
 
 Recommended order:
 
-1. Keep the long-running `unzck -c @@` campaign as the primary job.
-2. After that run finishes, use `zck_read_header -c @@` as the next narrow parser target.
-3. Use `zck_read_header -f @@` when you want deeper verification logic even at lower exec/sec.
-4. Only after those CLI targets plateau, consider a custom in-process library harness.
+1. Treat the `unzck -c @@` campaign as a completed experiment rather than the main active route.
+2. If `zchunk` fuzzing is revisited, try `zck_read_header -c @@` first as the next narrow parser target.
+3. Use `zck_read_header -f @@` when deeper verification logic is worth the speed tradeoff.
+4. Otherwise, shift project effort toward the stronger non-fuzzing evidence path, such as CodeQL and manual code review.
 
 ## Current Bottom Line
 
 What we have so far:
 
-- no confirmed crash yet
-- `unzck` is still the strongest first AFL target
-- `zck_read_header -c` is the best next alternate target
-- `zck_read_header -f` is a real secondary option when extra verification coverage is worth the speed tradeoff
+- no confirmed crash
+- one substantial `unzck -c @@` run with more than `33` million executions
+- stable and productive AFL behavior
+- viable alternate targets, but no vulnerability signal strong enough to justify continued focus here
 
-That means the current fuzzing setup is valid and productive, but we do not yet have a vulnerability to report from the tested short runs.
+That means the current zchunk AFL setup was valid and informative, but it did not produce a reportable vulnerability from the experiments performed.

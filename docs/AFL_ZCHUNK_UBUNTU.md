@@ -351,6 +351,17 @@ To reproduce one quickly:
 
 If you built with ASan, rerun the reproducer with the same ASan-enabled binary so the report stays informative.
 
+For alternate targets, pass the target name and any fixed target arguments after the build directory name. Example:
+
+```bash
+./scripts/repro-zchunk-afl-crash.sh \
+  "$PWD/fuzzing/zchunk/out-read-header-chunks/default/crashes/<crash-file>" \
+  "$PWD/targets/zchunk" \
+  build-afl \
+  zck_read_header \
+  -c
+```
+
 ## Step 12: What We Observed In The Tested Ubuntu Pilot
 
 In the tested EC2 pilot run for the baseline `unzck -c @@` target:
